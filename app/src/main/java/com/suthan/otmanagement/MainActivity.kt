@@ -309,17 +309,17 @@ private fun AdminApp(data: AppData, update: (AppData) -> Unit) {
             2 -> AdminMonthly(data, update, selectedFolder, { selectedFolder = it }, pad)
             else -> AdminSettings(data, update, pad, { showRate = true }, { showPassword = true }, { backup.launch("OT-Backup.json") }, { restore.launch(arrayOf("application/json")) }, { Store.clear(context); update(AppData("admin123", DEFAULT_RATE, emptyList(), emptyList())) })
         }
+                AdminDialogs(
+            data = data,
+            update = update,
+            showEmployee = showEmployee,
+            showRate = showRate,
+            showPassword = showPassword,
+            closeEmployee = { showEmployee = false },
+            closeRate = { showRate = false },
+            closePassword = { showPassword = false }
+        )
     }
-   AdminDialogs(
-    data = data,
-    update = update,
-    showEmployee = showEmployee,
-    showRate = showRate,
-    showPassword = showPassword,
-    closeEmployee = { showEmployee = false },
-    closeRate = { showRate = false },
-    closePassword = { showPassword = false }
-)
 }
 @Composable
 private fun AdminDialogs(
