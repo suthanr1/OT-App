@@ -310,9 +310,29 @@ private fun AdminApp(data: AppData, update: (AppData) -> Unit) {
             else -> AdminSettings(data, update, pad, { showRate = true }, { showPassword = true }, { backup.launch("OT-Backup.json") }, { restore.launch(arrayOf("application/json")) }, { Store.clear(context); update(AppData("admin123", DEFAULT_RATE, emptyList(), emptyList())) })
         }
     }
-    if (showEmployee) EmployeeDialog(data, update) { showEmployee = false }
-    if (showRate) RateDialog(data, update) { showRate = false }
-    if (showPassword) PasswordDialog(data, update) { showPassword = false }
+    if (showEmployee) {
+    EmployeeDialog(
+        data = data,
+        update = update,
+        close = { showEmployee = false }
+    )
+}
+
+if (showRate) {
+    RateDialog(
+        data = data,
+        update = update,
+        close = { showRate = false }
+    )
+}
+
+if (showPassword) {
+    PasswordDialog(
+        data = data,
+        update = update,
+        close = { showPassword = false }
+    )
+}
 }
 
 @Composable
