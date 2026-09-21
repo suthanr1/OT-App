@@ -33,7 +33,12 @@ import java.util.Locale
 private const val STORE = "ot_offline_store_v1"
 private const val DEFAULT_RATE = 75.0
 
-private data class Employee(val id: String, val name: String, val active: Boolean = true)
+private data class Employee(
+    val id: String,
+    val name: String,
+    val active: Boolean = true,
+    val password: String = id
+)
 private data class OtEntry(
     val uid: String,
     val employeeId: String,
@@ -51,7 +56,8 @@ private data class AppData(
     val employees: List<Employee>,
     val entries: List<OtEntry>,
     val sessionRole: String = "",
-    val sessionEmployeeId: String = ""
+    val sessionEmployeeId: String = "",
+    val darkMode: Boolean = false
 )
 
 private object Store {
@@ -67,7 +73,7 @@ private object Store {
                 val id = o.optString("id").trim()
                 val name = o.optString("name").trim()
                 if (id.isNotEmpty() && name.isNotEmpty()) {
-                    employees += Employee(id, name, o.optBoolean("active", true))
+                    employees += Employee(id, name, o.optBoolean("active", true), o.optString("password", id))
                 }
             }
         }
@@ -96,13 +102,14 @@ private object Store {
             p.getFloat("rate", DEFAULT_RATE.toFloat()).toDouble(),
             employees, entries,
             p.getString("sessionRole", "") ?: "",
-            p.getString("sessionEmployeeId", "") ?: ""
+            p.getString("sessionEmployeeId", "") ?: "",
+            p.getBoolean("darkMode", false)
         )
     }
 
     fun save(c: Context, d: AppData) {
         val ea = JSONArray()
-        d.employees.forEach { e -> ea.put(JSONObject().apply { put("id", e.id); put("name", e.name); put("active", e.active) }) }
+        d.employees.forEach { e -> ea.put(JSONObject().apply { put("id", e.id); put("name", e.name); put("active", e.active); put("password", e.password) }) }
         val oa = JSONArray()
         d.entries.forEach { e ->
             oa.put(JSONObject().apply {
@@ -117,6 +124,7 @@ private object Store {
             .putString("entries", oa.toString())
             .putString("sessionRole", d.sessionRole)
             .putString("sessionEmployeeId", d.sessionEmployeeId)
+            .putBoolean("darkMode", d.darkMode)
             .apply()
     }
 
@@ -193,7 +201,9 @@ private fun OtApp() {
     var data by remember { mutableStateOf(Store.load(context)) }
     fun update(next: AppData) { data = next; Store.save(context, next) }
 
-    MaterialTheme {
+    MaterialTheme(
+        colorScheme = if (data.darkMode) darkColorScheme() else lightColorScheme()
+    ) {
         when (data.sessionRole) {
             "admin" -> AdminApp(data, ::update)
             "employee" -> EmployeeApp(data, ::update)
@@ -201,7 +211,7 @@ private fun OtApp() {
                 if (role == "admin" && login == "admin" && password == data.adminPassword) {
                     update(data.copy(sessionRole = "admin", sessionEmployeeId = "")); true
                 } else if (role == "employee") {
-                    val e = data.employees.firstOrNull { it.active && it.name.equals(login.trim(), true) && it.id == password }
+                    val e = data.employees.firstOrNull { it.active && it.name.equals(login.trim(), true) && it.password == password }
                     if (e != null) { update(data.copy(sessionRole = "employee", sessionEmployeeId = e.id)); true } else false
                 } else false
             }
@@ -246,14 +256,16 @@ private fun EmployeeApp(data: AppData, update: (AppData) -> Unit) {
     Scaffold(bottomBar = {
         NavigationBar {
             NavigationBarItem(tab == 0, { tab = 0 }, icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
-            NavigationBarItem(tab == 1, { tab = 1 }, icon = { Icon(Icons.Default.List, null) }, label = { Text("My OT") })
-            NavigationBarItem(tab == 2, { tab = 2 }, icon = { Icon(Icons.Default.Folder, null) }, label = { Text("Monthly") })
+            NavigationBarItem(tab == 1, { tab = 1 }, icon = { Icon(Icons.Default.List, null) }, label = { Text("My Logs") })
+            NavigationBarItem(tab == 2, { tab = 2; selectedFolder = null }, icon = { Icon(Icons.Default.Assessment, null) }, label = { Text("Reports") })
+            NavigationBarItem(tab == 3, { tab = 3 }, icon = { Icon(Icons.Default.Settings, null) }, label = { Text("Settings") })
         }
     }) { pad ->
         when (tab) {
             0 -> EmployeeHome(data, employee, update, pad)
-            1 -> EmployeeRecords(data, employee.id, cycleKey(currentDate()), "My OT", update, pad)
-            else -> EmployeeFolders(data, employee.id, selectedFolder, { selectedFolder = it }, update, pad)
+            1 -> EmployeeRecords(data, employee.id, cycleKey(currentDate()), "My Logs", update, pad)
+            2 -> EmployeeReports(data, employee.id, selectedFolder, { selectedFolder = it }, update, pad)
+            else -> EmployeeSettings(data, employee, update, pad)
         }
     }
 }
@@ -266,15 +278,18 @@ private fun EmployeeHome(data: AppData, employee: Employee, update: (AppData) ->
     LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column { Text("Hello, ${employee.name}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("Current OT Cycle") }
+                Column { Text("OT Track", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary); Text("Hello, ${employee.name}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("Current OT Cycle") }
                 TextButton(onClick = { update(data.copy(sessionRole = "", sessionEmployeeId = "")) }) { Text("Logout") }
             }
         }
-        item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text(cycleLabel(current), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text(cycleRange(current)); Spacer(Modifier.height(10.dp)); Text("Total OT Hours: ${fmt2(own.sumOf { it.hours })}"); Text("Total OT Amount: ${money(own.sumOf { it.amount })}") } } }
+        item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp)) { Text(cycleLabel(current), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text(cycleRange(current), color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(12.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Card(Modifier.weight(1f)) { Column(Modifier.padding(12.dp)) { Text("OT Hours", style = MaterialTheme.typography.labelMedium); Text(fmt2(own.sumOf { it.hours }), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) } }
+            Card(Modifier.weight(1f)) { Column(Modifier.padding(12.dp)) { Text("OT Amount", style = MaterialTheme.typography.labelMedium); Text(money(own.sumOf { it.amount }), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) } }
+        } } } }
         item { Button(onClick = { showAdd = true }, Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("Add OT Entry") } }
         item { Text("OT Rate: ${money(data.rate)}/hour", fontWeight = FontWeight.SemiBold) }
-        item { Text("Current Month Records", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-        items(own.sortedByDescending { it.date }) { OtRow(it, employee.name, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == it.uid })) }) }
+        item { Text("Recent OT", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+        items(own.sortedByDescending { it.date }.take(5)) { OtRow(it, null, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == it.uid })) }) }
         if (own.isEmpty()) item { Text("No OT entries in this cycle.") }
     }
     if (showAdd) AddOtDialog(data, employee, { update(it) }, { showAdd = false })
@@ -285,10 +300,51 @@ private fun EmployeeRecords(data: AppData, employeeId: String, key: String, titl
     val rows = data.entries.filter { it.employeeId == employeeId && cycleKey(it.date) == key }.sortedByDescending { it.date }
     LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("${cycleLabel(key)} • ${cycleRange(key)}") }
-        item { SummaryCard(rows) }
+        item { LogSummaryCard(rows) }
         items(rows) { row -> OtRow(row, null, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == row.uid })) }) }
         if (rows.isEmpty()) item { Text("No records in this monthly cycle.") }
     }
+}
+
+@Composable
+private fun EmployeeReports(data: AppData, employeeId: String, selected: String?, onSelect: (String?) -> Unit, update: (AppData) -> Unit, pad: PaddingValues) {
+    if (selected != null) {
+        val rows = data.entries.filter { it.employeeId == employeeId && cycleKey(it.date) == selected }.sortedByDescending { it.date }
+        Column(Modifier.fillMaxSize().padding(pad).padding(16.dp)) {
+            TextButton(onClick = { onSelect(null) }) { Text("← All Reports") }
+            Text("${cycleLabel(selected)} Report", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(cycleRange(selected), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(10.dp))
+            LogSummaryCard(rows)
+            Spacer(Modifier.height(10.dp))
+            LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(rows) { r -> OtRow(r, null, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == r.uid })) }) }
+                if (rows.isEmpty()) item { Text("No OT entries in this monthly cycle.") }
+            }
+        }
+        return
+    }
+    LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Text("Reports", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("Monthly folders • 26th → 25th", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        items(folderKeys(data)) { key ->
+            val rows = data.entries.filter { it.employeeId == employeeId && cycleKey(it.date) == key }
+            Card(Modifier.fillMaxWidth().clickable { onSelect(key) }) { Row(Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Column { Text(cycleLabel(key), fontWeight = FontWeight.Bold); Text(cycleRange(key), color = MaterialTheme.colorScheme.onSurfaceVariant) }; Text("${rows.size} OT") } }
+        }
+    }
+}
+
+@Composable
+private fun EmployeeSettings(data: AppData, employee: Employee, update: (AppData) -> Unit, pad: PaddingValues) {
+    var showPassword by remember { mutableStateOf(false) }
+    LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+        item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("My Profile", fontWeight = FontWeight.Bold); Spacer(Modifier.height(4.dp)); Text(employee.name); Text("Employee ID: ${employee.id}", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
+        item { OutlinedButton(onClick = { showPassword = true }, Modifier.fillMaxWidth()) { Icon(Icons.Default.Lock, null); Spacer(Modifier.width(6.dp)); Text("Change Password") } }
+        item { OutlinedButton(onClick = { update(data.copy(darkMode = !data.darkMode)) }, Modifier.fillMaxWidth()) { Icon(if (data.darkMode) Icons.Default.LightMode else Icons.Default.DarkMode, null); Spacer(Modifier.width(6.dp)); Text(if (data.darkMode) "Light Mode" else "Dark Mode") } }
+        item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("About OT Track", fontWeight = FontWeight.Bold); Text("Offline OT Management", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
+        item { OutlinedButton(onClick = { update(data.copy(sessionRole = "", sessionEmployeeId = "")) }, Modifier.fillMaxWidth()) { Icon(Icons.Default.Logout, null); Spacer(Modifier.width(6.dp)); Text("Logout") } }
+    }
+    if (showPassword) EmployeePasswordDialog(employee, data, update) { showPassword = false }
 }
 
 @Composable
@@ -450,17 +506,39 @@ private fun AdminSettings(data: AppData, update: (AppData) -> Unit, pad: Padding
 }
 
 @Composable
-private fun SummaryCard(rows: List<OtEntry>) { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) { Text("Summary", fontWeight = FontWeight.Bold); Text("Hours: ${fmt2(rows.sumOf { it.hours })}"); Text("Amount: ${money(rows.sumOf { it.amount })}"); Text("Sunday Double: ${fmt2(rows.filter { it.multiplier == 2 }.sumOf { it.hours })} h") } } }
+private fun LogSummaryCard(rows: List<OtEntry>) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Card(Modifier.weight(1f)) { Column(Modifier.padding(14.dp)) { Text("Total Hours", style = MaterialTheme.typography.labelMedium); Text(fmt2(rows.sumOf { it.hours }), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) } }
+        Card(Modifier.weight(1f)) { Column(Modifier.padding(14.dp)) { Text("Total Amount", style = MaterialTheme.typography.labelMedium); Text(money(rows.sumOf { it.amount }), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) } }
+    }
+}
 
 @Composable
 private fun OtRow(row: OtEntry, employeeName: String?, onDelete: () -> Unit) {
-    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) {
-        if (employeeName != null) Text(employeeName, fontWeight = FontWeight.Bold)
-        Text(row.date, fontWeight = FontWeight.SemiBold); Text("${formatTime12(row.from)} → ${formatTime12(row.to)} • ${fmt2(row.hours)} h")
-        Text("Rate ${money(row.rate)} • ${if (row.multiplier == 2) "Sunday Double 2×" else "Normal 1×"}")
-        Text("Amount: ${money(row.amount)}", fontWeight = FontWeight.Bold)
-        TextButton(onClick = onDelete) { Text("Delete") }
+    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Column {
+                if (employeeName != null) Text(employeeName, fontWeight = FontWeight.Bold)
+                Text("${formatDateDisplay(row.date)} • ${dayName(row.date)}", fontWeight = FontWeight.SemiBold)
+                Text("${formatTime12(row.from)} → ${formatTime12(row.to)} • ${fmt2(row.hours)} Hrs", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            TextButton(onClick = onDelete) { Text("Delete") }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(if (row.multiplier == 2) "Double 2×" else "Normal 1×")
+            Text(money(row.amount), fontWeight = FontWeight.Bold)
+        }
     } }
+}
+
+private fun formatDateDisplay(date: String): String {
+    val d = runCatching { SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(date) }.getOrNull() ?: return date
+    return SimpleDateFormat("dd MMM yyyy", Locale.ENGLISH).format(d)
+}
+
+private fun dayName(date: String): String {
+    val d = runCatching { SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(date) }.getOrNull() ?: return ""
+    return SimpleDateFormat("EEEE", Locale.ENGLISH).format(d)
 }
 
 @Composable
@@ -507,6 +585,22 @@ private fun timeDialog(context: Context, initial: String, onPick: (String) -> Un
 }
 
 @Composable
+private fun EmployeePasswordDialog(employee: Employee, data: AppData, update: (AppData) -> Unit, close: () -> Unit) {
+    var value by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf("") }
+    AlertDialog(onDismissRequest = close, title = { Text("Change Password") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(value, { value = it }, label = { Text("New password") }, singleLine = true)
+        OutlinedTextField(confirm, { confirm = it }, label = { Text("Confirm password") }, singleLine = true)
+        if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
+    } }, confirmButton = { Button(onClick = {
+        if (value.length < 4) error = "Minimum 4 characters"
+        else if (value != confirm) error = "Passwords do not match"
+        else { update(data.copy(employees = data.employees.map { if (it.id == employee.id) it.copy(password = value) else it })); close() }
+    }) { Text("Save") } }, dismissButton = { TextButton(onClick = close) { Text("Cancel") } })
+}
+
+@Composable
 private fun EmployeeDialog(data: AppData, update: (AppData) -> Unit, close: () -> Unit) {
     var name by remember { mutableStateOf("") }; var id by remember { mutableStateOf("") }; var error by remember { mutableStateOf("") }
     AlertDialog(onDismissRequest = close, title = { Text("Create Employee") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -517,7 +611,7 @@ private fun EmployeeDialog(data: AppData, update: (AppData) -> Unit, close: () -
     } }, confirmButton = { Button(onClick = {
         if (name.trim().isEmpty() || id.trim().isEmpty()) { error = "Enter name and ID"; return@Button }
         if (data.employees.any { it.id == id.trim() }) { error = "Employee ID already exists"; return@Button }
-        update(data.copy(employees = data.employees + Employee(id.trim(), name.trim()))); close()
+        update(data.copy(employees = data.employees + Employee(id.trim(), name.trim(), true, id.trim()))); close()
     }) { Text("Create") } }, dismissButton = { TextButton(onClick = close) { Text("Cancel") } })
 }
 
@@ -551,7 +645,7 @@ private fun writeCsv(context: Context, uri: Uri, data: AppData) {
 private fun writeBackup(context: Context, uri: Uri, data: AppData) {
     val root = JSONObject().apply {
         put("adminPassword", data.adminPassword); put("rate", data.rate)
-        put("employees", JSONArray().apply { data.employees.forEach { put(JSONObject().apply { put("id", it.id); put("name", it.name); put("active", it.active) }) } })
+        put("employees", JSONArray().apply { data.employees.forEach { put(JSONObject().apply { put("id", it.id); put("name", it.name); put("active", it.active); put("password", it.password) }) } })
         put("entries", JSONArray().apply { data.entries.forEach { e -> put(JSONObject().apply { put("uid", e.uid); put("employeeId", e.employeeId); put("date", e.date); put("from", e.from); put("to", e.to); put("hours", e.hours); put("rate", e.rate); put("multiplier", e.multiplier); put("amount", e.amount) }) } })
     }
     context.contentResolver.openOutputStream(uri)?.use { it.write(root.toString(2).toByteArray()) }
@@ -561,7 +655,7 @@ private fun readBackup(context: Context, uri: Uri): AppData? = runCatching {
     val text = BufferedReader(InputStreamReader(context.contentResolver.openInputStream(uri)!!)).use { it.readText() }
     val root = JSONObject(text)
     val employees = mutableListOf<Employee>(); val ea = root.optJSONArray("employees") ?: JSONArray()
-    for (i in 0 until ea.length()) { val o = ea.getJSONObject(i); employees += Employee(o.optString("id"), o.optString("name"), o.optBoolean("active", true)) }
+    for (i in 0 until ea.length()) { val o = ea.getJSONObject(i); employees += Employee(o.optString("id"), o.optString("name"), o.optBoolean("active", true), o.optString("password", o.optString("id"))) }
     val entries = mutableListOf<OtEntry>(); val oa = root.optJSONArray("entries") ?: JSONArray()
     for (i in 0 until oa.length()) { val o = oa.getJSONObject(i); entries += OtEntry(o.optString("uid"), o.optString("employeeId"), o.optString("date"), o.optString("from"), o.optString("to"), o.optDouble("hours"), o.optDouble("rate", DEFAULT_RATE), o.optInt("multiplier", 1), o.optDouble("amount")) }
     AppData(root.optString("adminPassword", "admin123"), root.optDouble("rate", DEFAULT_RATE), employees, entries)
