@@ -9,6 +9,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import org.json.JSONArray
@@ -260,7 +262,13 @@ private fun LoginScreen(onLogin: (String, String, String) -> Boolean) {
     var error by remember { mutableStateOf("") }
     Surface(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-            Text("OT Management", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Image(
+                painter = painterResource(id = com.suthan.otmanagement.R.drawable.ot_track_logo),
+                contentDescription = "OT Track",
+                modifier = Modifier.size(150.dp)
+            )
+            Spacer(Modifier.height(14.dp))
+            Text("OT Track", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text("Offline OT Management", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(24.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -306,21 +314,15 @@ private fun EmployeeApp(data: AppData, update: (AppData) -> Unit) {
 @Composable
 private fun OtTrackBrand(compact: Boolean = false) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Surface(
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(if (compact) 10.dp else 12.dp),
-            color = MaterialTheme.colorScheme.primary
-        ) {
-            Box(
-                Modifier.size(if (compact) 34.dp else 42.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("OT", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.ExtraBold)
-            }
-        }
+        Image(
+            painter = painterResource(id = com.suthan.otmanagement.R.drawable.ot_track_logo),
+            contentDescription = "OT Track",
+            modifier = Modifier.size(if (compact) 44.dp else 54.dp)
+        )
         Spacer(Modifier.width(10.dp))
         Column {
             Text("OT Track", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-            if (!compact) Text("Offline OT Management", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (!compact) Text("Track Today • Plan Tomorrow", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -450,12 +452,37 @@ private fun EmployeeReports(data: AppData, employeeId: String, selected: String?
 
 @Composable
 private fun EmployeeSettings(data: AppData, employee: Employee, update: (AppData) -> Unit, pad: PaddingValues) {
+    val context = LocalContext.current
     var showPassword by remember { mutableStateOf(false) }
+    val backup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) writeBackup(context, uri, data)
+    }
+    val restore = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            readBackup(context, uri)?.let { restored ->
+                update(restored.copy(sessionRole = "employee", sessionEmployeeId = employee.id, darkMode = data.darkMode))
+            }
+        }
+    }
     LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
         item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("My Profile", fontWeight = FontWeight.Bold); Spacer(Modifier.height(4.dp)); Text(employee.name); Text("Employee ID: ${employee.id}", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
         item { OutlinedButton(onClick = { showPassword = true }, Modifier.fillMaxWidth()) { Icon(Icons.Default.Lock, null); Spacer(Modifier.width(6.dp)); Text("Change Password") } }
         item { OutlinedButton(onClick = { update(data.copy(darkMode = !data.darkMode)) }, Modifier.fillMaxWidth()) { Icon(if (data.darkMode) Icons.Default.LightMode else Icons.Default.DarkMode, null); Spacer(Modifier.width(6.dp)); Text(if (data.darkMode) "Light Mode" else "Dark Mode") } }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Backup & Restore", fontWeight = FontWeight.Bold)
+                    Text("Keep your OT data safe before uninstalling or changing phones.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Button(onClick = { backup.launch("OT-Track-Backup.json") }, Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Backup, null); Spacer(Modifier.width(6.dp)); Text("Backup Offline Data")
+                    }
+                    OutlinedButton(onClick = { restore.launch(arrayOf("application/json", "text/json", "*/*")) }, Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Restore, null); Spacer(Modifier.width(6.dp)); Text("Restore Offline Data")
+                    }
+                }
+            }
+        }
         item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("About OT Track", fontWeight = FontWeight.Bold); Text("Offline OT Management", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
         item { OutlinedButton(onClick = { update(data.copy(sessionRole = "", sessionEmployeeId = "")) }, Modifier.fillMaxWidth()) { Icon(Icons.Default.Logout, null); Spacer(Modifier.width(6.dp)); Text("Logout") } }
     }
@@ -769,7 +796,7 @@ private fun writeCsv(context: Context, uri: Uri, data: AppData) {
 
 private fun writeBackup(context: Context, uri: Uri, data: AppData) {
     val root = JSONObject().apply {
-        put("adminPassword", data.adminPassword); put("rate", data.rate)
+        put("backupVersion", 1); put("adminPassword", data.adminPassword); put("rate", data.rate); put("darkMode", data.darkMode)
         put("employees", JSONArray().apply { data.employees.forEach { put(JSONObject().apply { put("id", it.id); put("name", it.name); put("active", it.active); put("password", it.password) }) } })
         put("entries", JSONArray().apply { data.entries.forEach { e -> put(JSONObject().apply { put("uid", e.uid); put("employeeId", e.employeeId); put("date", e.date); put("from", e.from); put("to", e.to); put("hours", e.hours); put("rate", e.rate); put("multiplier", e.multiplier); put("amount", e.amount) }) } })
     }
@@ -783,5 +810,5 @@ private fun readBackup(context: Context, uri: Uri): AppData? = runCatching {
     for (i in 0 until ea.length()) { val o = ea.getJSONObject(i); employees += Employee(o.optString("id"), o.optString("name"), o.optBoolean("active", true), o.optString("password", o.optString("id"))) }
     val entries = mutableListOf<OtEntry>(); val oa = root.optJSONArray("entries") ?: JSONArray()
     for (i in 0 until oa.length()) { val o = oa.getJSONObject(i); entries += OtEntry(o.optString("uid"), o.optString("employeeId"), o.optString("date"), o.optString("from"), o.optString("to"), o.optDouble("hours"), o.optDouble("rate", DEFAULT_RATE), o.optInt("multiplier", 1), o.optDouble("amount")) }
-    AppData(root.optString("adminPassword", "admin123"), root.optDouble("rate", DEFAULT_RATE), employees, entries)
+    AppData(root.optString("adminPassword", "admin123"), root.optDouble("rate", DEFAULT_RATE), employees, entries, "", "", root.optBoolean("darkMode", false))
 }.getOrNull()
