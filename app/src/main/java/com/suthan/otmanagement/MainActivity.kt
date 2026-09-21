@@ -201,8 +201,41 @@ private fun OtApp() {
     var data by remember { mutableStateOf(Store.load(context)) }
     fun update(next: AppData) { data = next; Store.save(context, next) }
 
+    val lightColors = lightColorScheme(
+        primary = androidx.compose.ui.graphics.Color(0xFF2563EB),
+        onPrimary = androidx.compose.ui.graphics.Color.White,
+        primaryContainer = androidx.compose.ui.graphics.Color(0xFFDCE8FF),
+        onPrimaryContainer = androidx.compose.ui.graphics.Color(0xFF0B2B5A),
+        secondary = androidx.compose.ui.graphics.Color(0xFF0F4C81),
+        background = androidx.compose.ui.graphics.Color(0xFFF5F8FC),
+        onBackground = androidx.compose.ui.graphics.Color(0xFF172033),
+        surface = androidx.compose.ui.graphics.Color.White,
+        onSurface = androidx.compose.ui.graphics.Color(0xFF172033),
+        surfaceVariant = androidx.compose.ui.graphics.Color(0xFFE9EEF6),
+        onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF5B667A),
+        outline = androidx.compose.ui.graphics.Color(0xFFD3DBE8)
+    )
+    val darkColors = darkColorScheme(
+        primary = androidx.compose.ui.graphics.Color(0xFF76A7FF),
+        onPrimary = androidx.compose.ui.graphics.Color(0xFF06295C),
+        primaryContainer = androidx.compose.ui.graphics.Color(0xFF123B73),
+        onPrimaryContainer = androidx.compose.ui.graphics.Color(0xFFDCE8FF),
+        secondary = androidx.compose.ui.graphics.Color(0xFF7DB8F2),
+        background = androidx.compose.ui.graphics.Color(0xFF0B1220),
+        onBackground = androidx.compose.ui.graphics.Color(0xFFE7EDF7),
+        surface = androidx.compose.ui.graphics.Color(0xFF111B2E),
+        onSurface = androidx.compose.ui.graphics.Color(0xFFE7EDF7),
+        surfaceVariant = androidx.compose.ui.graphics.Color(0xFF1D2940),
+        onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFFAAB7CA),
+        outline = androidx.compose.ui.graphics.Color(0xFF33415A)
+    )
     MaterialTheme(
-        colorScheme = if (data.darkMode) darkColorScheme() else lightColorScheme()
+        colorScheme = if (data.darkMode) darkColors else lightColors,
+        shapes = Shapes(
+            small = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+            medium = androidx.compose.foundation.shape.RoundedCornerShape(18.dp),
+            large = androidx.compose.foundation.shape.RoundedCornerShape(24.dp)
+        )
     ) {
         when (data.sessionRole) {
             "admin" -> AdminApp(data, ::update)
@@ -271,26 +304,108 @@ private fun EmployeeApp(data: AppData, update: (AppData) -> Unit) {
 }
 
 @Composable
+private fun OtTrackBrand(compact: Boolean = false) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Surface(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(if (compact) 10.dp else 12.dp),
+            color = MaterialTheme.colorScheme.primary
+        ) {
+            Box(
+                Modifier.size(if (compact) 34.dp else 42.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("OT", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.ExtraBold)
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Column {
+            Text("OT Track", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+            if (!compact) Text("Offline OT Management", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
 private fun EmployeeHome(data: AppData, employee: Employee, update: (AppData) -> Unit, pad: PaddingValues) {
     var showAdd by remember { mutableStateOf(false) }
     val current = cycleKey(currentDate())
     val own = data.entries.filter { it.employeeId == employee.id && cycleKey(it.date) == current }
-    LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(
+        Modifier.fillMaxSize().padding(pad).padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
         item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column { Text("OT Track", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary); Text("Hello, ${employee.name}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("Current OT Cycle") }
-                TextButton(onClick = { update(data.copy(sessionRole = "", sessionEmployeeId = "")) }) { Text("Logout") }
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OtTrackBrand()
+                TextButton(onClick = { update(data.copy(sessionRole = "", sessionEmployeeId = "")) }) {
+                    Text("Logout", fontWeight = FontWeight.SemiBold)
+                }
             }
         }
-        item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp)) { Text(cycleLabel(current), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text(cycleRange(current), color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(12.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Card(Modifier.weight(1f)) { Column(Modifier.padding(12.dp)) { Text("OT Hours", style = MaterialTheme.typography.labelMedium); Text(fmt2(own.sumOf { it.hours }), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) } }
-            Card(Modifier.weight(1f)) { Column(Modifier.padding(12.dp)) { Text("OT Amount", style = MaterialTheme.typography.labelMedium); Text(money(own.sumOf { it.amount }), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) } }
-        } } } }
-        item { Button(onClick = { showAdd = true }, Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("Add OT Entry") } }
-        item { Text("OT Rate: ${money(data.rate)}/hour", fontWeight = FontWeight.SemiBold) }
-        item { Text("Recent OT", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-        items(own.sortedByDescending { it.date }.take(5)) { OtRow(it, null, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == it.uid })) }) }
-        if (own.isEmpty()) item { Text("No OT entries in this cycle.") }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("Welcome back", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                Text(employee.name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("Your current overtime summary", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        item {
+            Card(
+                Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("CURRENT OT CYCLE", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = .82f))
+                    Text(cycleLabel(current), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
+                    Text(cycleRange(current), color = MaterialTheme.colorScheme.onPrimary.copy(alpha = .86f))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Card(Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = .12f))) {
+                            Column(Modifier.padding(14.dp)) {
+                                Text("OT Hours", color = MaterialTheme.colorScheme.onPrimary.copy(alpha = .82f))
+                                Text(fmt2(own.sumOf { it.hours }), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
+                            }
+                        }
+                        Card(Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = .12f))) {
+                            Column(Modifier.padding(14.dp)) {
+                                Text("OT Amount", color = MaterialTheme.colorScheme.onPrimary.copy(alpha = .82f))
+                                Text(money(own.sumOf { it.amount }), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Button(
+                onClick = { showAdd = true },
+                Modifier.fillMaxWidth().height(52.dp),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
+            ) {
+                Icon(Icons.Default.Add, null)
+                Spacer(Modifier.width(8.dp))
+                Text("Add OT Entry", fontWeight = FontWeight.Bold)
+            }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column {
+                        Text("OT Rate", fontWeight = FontWeight.SemiBold)
+                        Text("Admin controlled", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Text("${money(data.rate)}/hour", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+        item { Text("Recent OT", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+        items(own.sortedByDescending { it.date }.take(5)) {
+            OtRow(it, null, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == it.uid })) })
+        }
+        if (own.isEmpty()) item { Text("No OT entries in this cycle.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
     if (showAdd) AddOtDialog(data, employee, { update(it) }, { showAdd = false })
 }
@@ -300,7 +415,7 @@ private fun EmployeeRecords(data: AppData, employeeId: String, key: String, titl
     val rows = data.entries.filter { it.employeeId == employeeId && cycleKey(it.date) == key }.sortedByDescending { it.date }
     LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("${cycleLabel(key)} • ${cycleRange(key)}") }
-        item { LogSummaryCard(rows) }
+        item { LogLogSummaryCard(rows) }
         items(rows) { row -> OtRow(row, null, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == row.uid })) }) }
         if (rows.isEmpty()) item { Text("No records in this monthly cycle.") }
     }
@@ -315,7 +430,7 @@ private fun EmployeeReports(data: AppData, employeeId: String, selected: String?
             Text("${cycleLabel(selected)} Report", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(cycleRange(selected), color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(10.dp))
-            LogSummaryCard(rows)
+            LogLogSummaryCard(rows)
             Spacer(Modifier.height(10.dp))
             LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(rows) { r -> OtRow(r, null, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == r.uid })) }) }
@@ -480,7 +595,7 @@ private fun AdminMonthly(data: AppData, update: (AppData) -> Unit, selected: Str
         Column(Modifier.fillMaxSize().padding(pad).padding(16.dp)) {
             TextButton(onClick = { onSelect(null) }) { Text("← All Monthly Folders") }
             Text(cycleLabel(selected), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text(cycleRange(selected)); Spacer(Modifier.height(10.dp)); LogSummaryCard(rows)
+            Text(cycleRange(selected)); Spacer(Modifier.height(10.dp)); LogLogSummaryCard(rows)
             LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) { items(rows) { r -> OtRow(r, data.employees.firstOrNull { it.id == r.employeeId }?.name, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == r.uid })) }) } }
         }
     } else LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -508,8 +623,18 @@ private fun AdminSettings(data: AppData, update: (AppData) -> Unit, pad: Padding
 @Composable
 private fun LogSummaryCard(rows: List<OtEntry>) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Card(Modifier.weight(1f)) { Column(Modifier.padding(14.dp)) { Text("Total Hours", style = MaterialTheme.typography.labelMedium); Text(fmt2(rows.sumOf { it.hours }), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) } }
-        Card(Modifier.weight(1f)) { Column(Modifier.padding(14.dp)) { Text("Total Amount", style = MaterialTheme.typography.labelMedium); Text(money(rows.sumOf { it.amount }), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) } }
+        Card(Modifier.weight(1f)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("TOTAL HOURS", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(fmt2(rows.sumOf { it.hours }), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            }
+        }
+        Card(Modifier.weight(1f)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("TOTAL AMOUNT", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(money(rows.sumOf { it.amount }), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            }
+        }
     }
 }
 
