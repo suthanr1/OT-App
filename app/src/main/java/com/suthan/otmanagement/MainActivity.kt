@@ -480,7 +480,7 @@ private fun AdminMonthly(data: AppData, update: (AppData) -> Unit, selected: Str
         Column(Modifier.fillMaxSize().padding(pad).padding(16.dp)) {
             TextButton(onClick = { onSelect(null) }) { Text("← All Monthly Folders") }
             Text(cycleLabel(selected), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text(cycleRange(selected)); Spacer(Modifier.height(10.dp)); SummaryCard(rows)
+            Text(cycleRange(selected)); Spacer(Modifier.height(10.dp)); LogSummaryCard(rows)
             LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) { items(rows) { r -> OtRow(r, data.employees.firstOrNull { it.id == r.employeeId }?.name, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == r.uid })) }) } }
         }
     } else LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
