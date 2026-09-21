@@ -415,7 +415,7 @@ private fun EmployeeRecords(data: AppData, employeeId: String, key: String, titl
     val rows = data.entries.filter { it.employeeId == employeeId && cycleKey(it.date) == key }.sortedByDescending { it.date }
     LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("${cycleLabel(key)} • ${cycleRange(key)}") }
-        item { LogLogSummaryCard(rows) }
+        item { LogSummaryCard(rows) }
         items(rows) { row -> OtRow(row, null, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == row.uid })) }) }
         if (rows.isEmpty()) item { Text("No records in this monthly cycle.") }
     }
@@ -430,7 +430,7 @@ private fun EmployeeReports(data: AppData, employeeId: String, selected: String?
             Text("${cycleLabel(selected)} Report", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(cycleRange(selected), color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(10.dp))
-            LogLogSummaryCard(rows)
+            LogSummaryCard(rows)
             Spacer(Modifier.height(10.dp))
             LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(rows) { r -> OtRow(r, null, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == r.uid })) }) }
@@ -595,7 +595,7 @@ private fun AdminMonthly(data: AppData, update: (AppData) -> Unit, selected: Str
         Column(Modifier.fillMaxSize().padding(pad).padding(16.dp)) {
             TextButton(onClick = { onSelect(null) }) { Text("← All Monthly Folders") }
             Text(cycleLabel(selected), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text(cycleRange(selected)); Spacer(Modifier.height(10.dp)); LogLogSummaryCard(rows)
+            Text(cycleRange(selected)); Spacer(Modifier.height(10.dp)); LogSummaryCard(rows)
             LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) { items(rows) { r -> OtRow(r, data.employees.firstOrNull { it.id == r.employeeId }?.name, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == r.uid })) }) } }
         }
     } else LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
