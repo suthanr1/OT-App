@@ -31,6 +31,9 @@ import java.io.InputStreamReader
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
+import kotlinx.coroutines.launch
+import io.github.jan.supabase.auth.providers.builtin.Email
+import kotlinx.serialization.Serializable
 
 private const val STORE = "ot_offline_store_v1"
 private const val DEFAULT_RATE = 75.0
@@ -190,6 +193,44 @@ private fun folderKeys(d: AppData): List<String> {
     return keys.sortedDescending()
 }
 
+@Serializable
+private data class CloudProfile(
+    val id: String,
+    val employee_id: String,
+    val employee_name: String,
+    val role: String,
+    val hourly_rate: Double = DEFAULT_RATE,
+    val is_active: Boolean = true
+)
+
+private suspend fun cloudLogin(login: String, password: String, role: String): Result<CloudProfile> = runCatching {
+    val email = if (role == "admin") {
+        "admin@ottrack.local"
+    } else {
+        val safe = login.trim().lowercase(Locale.US)
+            .replace(Regex("[^a-z0-9]+"), ".")
+            .trim('.')
+        require(safe.isNotEmpty()) { "Enter employee name" }
+        "$safe@ottrack.local"
+    }
+
+    supabase.auth.signInWith(Email) {
+        this.email = email
+        this.password = password
+    }
+
+    val userId = supabase.auth.currentUserOrNull?.id
+        ?: error("Supabase login succeeded but user session was not found")
+
+    supabase.from("profiles")
+        .select {
+            filter {
+                eq("id", userId)
+            }
+        }
+        .decodeSingle<CloudProfile>()
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -243,23 +284,51 @@ private fun OtApp() {
             "admin" -> AdminApp(data, ::update)
             "employee" -> EmployeeApp(data, ::update)
             else -> LoginScreen { role, login, password ->
-                if (role == "admin" && login == "admin" && password == data.adminPassword) {
-                    update(data.copy(sessionRole = "admin", sessionEmployeeId = "")); true
-                } else if (role == "employee") {
-                    val e = data.employees.firstOrNull { it.active && it.name.equals(login.trim(), true) && it.password == password }
-                    if (e != null) { update(data.copy(sessionRole = "employee", sessionEmployeeId = e.id)); true } else false
-                } else false
+                cloudLogin(login, password, role).onSuccess { profile ->
+                    val isExpectedRole = profile.role.equals(role, ignoreCase = true)
+                    if (!profile.is_active || !isExpectedRole) {
+                        runCatching { supabase.auth.signOut() }
+                        throw IllegalStateException("Account is inactive or role is not allowed")
+                    }
+
+                    if (profile.role.equals("admin", ignoreCase = true)) {
+                        update(
+                            data.copy(
+                                sessionRole = "admin",
+                                sessionEmployeeId = "",
+                                rate = profile.hourly_rate
+                            )
+                        )
+                    } else {
+                        val employee = Employee(
+                            id = profile.employee_id,
+                            name = profile.employee_name,
+                            active = profile.is_active,
+                            password = ""
+                        )
+                        update(
+                            data.copy(
+                                employees = (data.employees.filterNot { it.id == employee.id } + employee),
+                                sessionRole = "employee",
+                                sessionEmployeeId = employee.id,
+                                rate = profile.hourly_rate
+                            )
+                        )
+                    }
+                }.isSuccess
             }
         }
     }
 }
 
 @Composable
-private fun LoginScreen(onLogin: (String, String, String) -> Boolean) {
+private fun LoginScreen(onLogin: suspend (String, String, String) -> Boolean) {
     var role by remember { mutableStateOf("employee") }
     var login by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     Surface(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             Image(
@@ -269,7 +338,7 @@ private fun LoginScreen(onLogin: (String, String, String) -> Boolean) {
             )
             Spacer(Modifier.height(14.dp))
             Text("OT Track", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("Offline OT Management", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Online OT Management", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(24.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(selected = role == "employee", onClick = { role = "employee" }, label = { Text("Employee") })
@@ -281,7 +350,25 @@ private fun LoginScreen(onLogin: (String, String, String) -> Boolean) {
             OutlinedTextField(password, { password = it; error = "" }, label = { Text(if (role == "admin") "Admin Password" else "Employee ID / Password") }, singleLine = true)
             if (error.isNotEmpty()) { Spacer(Modifier.height(8.dp)); Text(error, color = MaterialTheme.colorScheme.error) }
             Spacer(Modifier.height(16.dp))
-            Button(onClick = { if (!onLogin(role, login, password)) error = "Invalid login details" }, modifier = Modifier.fillMaxWidth().widthIn(max = 360.dp)) { Text("Login") }
+            Button(
+                onClick = {
+                    if (login.isBlank() || password.isBlank()) {
+                        error = "Enter login details"
+                        return@Button
+                    }
+                    loading = true
+                    error = ""
+                    scope.launch {
+                        val ok = runCatching { onLogin(role, login, password) }.getOrDefault(false)
+                        loading = false
+                        if (!ok) error = "Invalid login details or Supabase connection failed"
+                    }
+                },
+                enabled = !loading,
+                modifier = Modifier.fillMaxWidth().widthIn(max = 360.dp)
+            ) {
+                Text(if (loading) "Connecting..." else "Login")
+            }
             Spacer(Modifier.height(12.dp))
             Text("No employee registration. Admin creates employee accounts.", style = MaterialTheme.typography.bodySmall)
         }
@@ -483,7 +570,7 @@ private fun EmployeeSettings(data: AppData, employee: Employee, update: (AppData
                 }
             }
         }
-        item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("About OT Track", fontWeight = FontWeight.Bold); Text("Offline OT Management", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
+        item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("About OT Track", fontWeight = FontWeight.Bold); Text("Online OT Management", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
         item { OutlinedButton(onClick = { update(data.copy(sessionRole = "", sessionEmployeeId = "")) }, Modifier.fillMaxWidth()) { Icon(Icons.Default.Logout, null); Spacer(Modifier.width(6.dp)); Text("Logout") } }
     }
     if (showPassword) EmployeePasswordDialog(employee, data, update) { showPassword = false }
@@ -643,7 +730,7 @@ private fun AdminSettings(data: AppData, update: (AppData) -> Unit, pad: Padding
         item { Button(onClick = backup, Modifier.fillMaxWidth()) { Text("Backup Offline Data") } }
         item { OutlinedButton(onClick = restore, Modifier.fillMaxWidth()) { Text("Restore Offline Data") } }
         item { OutlinedButton(onClick = clear, Modifier.fillMaxWidth()) { Text("Clear Device Data") } }
-        item { Text("Offline mode: data stays on this device. No internet or Supabase is used.", style = MaterialTheme.typography.bodySmall) }
+        item { Text("Cloud sync enabled. Offline backup is also available.", style = MaterialTheme.typography.bodySmall) }
     }
 }
 
