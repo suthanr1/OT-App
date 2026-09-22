@@ -217,6 +217,10 @@ private suspend fun cloudLogin(login: String, password: String, role: String): R
         "$safe@ottrack.local"
     }
 
+    // Clear any previous admin/employee session before starting a fresh login.
+    // This prevents a stale Supabase session from interfering with employee login.
+    runCatching { supabase.auth.signOut() }
+
     supabase.auth.signInWith(Email) {
         this.email = email
         this.password = password
