@@ -32,6 +32,14 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 import kotlinx.coroutines.launch
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.android.Android
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.providers.builtin.Email
 import io.github.jan.supabase.postgrest.from
@@ -198,11 +206,189 @@ private fun folderKeys(d: AppData): List<String> {
 @Serializable
 private data class CloudProfile(
     val id: String,
-    val employee_id: String,
+    val employee_id: String? = null,
     val employee_name: String,
     val role: String,
     val hourly_rate: Double = DEFAULT_RATE,
     val is_active: Boolean = true
+)
+
+@Serializable
+private data class CloudOtEntry(
+    val id: String,
+    val user_id: String,
+    val ot_date: String,
+    val from_time: String,
+    val to_time: String,
+    val hours: Double,
+    val ot_type: String,
+    val rate: Double,
+    val amount: Double
+)
+
+@Serializable
+private data class CloudOtInsert(
+    val user_id: String,
+    val ot_date: String,
+    val from_time: String,
+    val to_time: String,
+    val hours: Double,
+    val ot_type: String,
+    val rate: Double,
+    val amount: Double
+)
+
+@Serializable
+private data class CloudRateUpdate(val hourly_rate: Double)
+
+@Serializable
+private data class CloudActiveUpdate(val is_active: Boolean)
+
+private fun CloudOtEntry.toLocal(employeeId: String) = OtEntry(
+    uid = id,
+    employeeId = employeeId,
+    date = ot_date,
+    from = from_time,
+    to = to_time,
+    hours = hours,
+    rate = rate,
+    multiplier = if (ot_type.equals("Double", true)) 2 else 1,
+    amount = amount
+)
+
+private fun CloudProfile.toEmployee(): Employee? {
+    val eid = employee_id?.trim().orEmpty()
+    if (eid.isEmpty()) return null
+    return Employee(eid, employee_name, is_active, "")
+}
+
+private suspend fun loadCloudState(role: String): Pair<List<Employee>, List<OtEntry>> {
+    val profiles = supabase.from("profiles")
+        .select()
+        .decodeList<CloudProfile>()
+
+    val employeeIdsByAuthId = profiles
+        .filter { it.role.equals("employee", true) }
+        .mapNotNull { p -> p.employee_id?.let { p.id to it } }
+        .toMap()
+
+    val entries = supabase.from("ot_entries")
+        .select()
+        .decodeList<CloudOtEntry>()
+        .mapNotNull { row ->
+            employeeIdsByAuthId[row.user_id]?.let { employeeId -> row.toLocal(employeeId) }
+        }
+
+    val employees = profiles
+        .filter { it.role.equals("employee", true) }
+        .mapNotNull { it.toEmployee() }
+        .sortedBy { it.name.lowercase(Locale.US) }
+
+    return employees to entries
+}
+
+private suspend fun refreshCloudData(data: AppData): AppData {
+    val (employees, entries) = loadCloudState(data.sessionRole)
+    return data.copy(
+        employees = employees,
+        entries = entries,
+        sessionEmployeeId = data.sessionEmployeeId
+    )
+}
+
+private suspend fun insertCloudOt(row: OtEntry) {
+    val userId = supabase.auth.currentUserOrNull()?.id
+        ?: error("Employee session not found")
+    val type = if (row.multiplier == 2) "Double" else "Normal"
+    supabase.from("ot_entries").insert(
+        CloudOtInsert(
+            user_id = userId,
+            ot_date = row.date,
+            from_time = row.from,
+            to_time = row.to,
+            hours = row.hours,
+            ot_type = type,
+            rate = row.rate,
+            amount = row.amount
+        )
+    )
+}
+
+private suspend fun deleteCloudOt(id: String) {
+    supabase.from("ot_entries").delete {
+        filter { eq("id", id) }
+    }
+}
+
+private suspend fun setEmployeeActive(employeeId: String, active: Boolean) {
+    supabase.from("profiles").update(CloudActiveUpdate(active)) {
+        filter { eq("employee_id", employeeId) }
+    }
+}
+
+private suspend fun deleteEmployeeProfile(employeeId: String) {
+    supabase.from("profiles").delete {
+        filter { eq("employee_id", employeeId) }
+    }
+}
+
+private suspend fun updateMyRate(rate: Double) {
+    val uid = supabase.auth.currentUserOrNull()?.id ?: error("Admin session not found")
+    supabase.from("profiles").update(CloudRateUpdate(rate)) {
+        filter { eq("role", "employee") }
+    }
+    supabase.from("profiles").update(CloudRateUpdate(rate)) {
+        filter { eq("id", uid) }
+    }
+}
+
+private suspend fun createEmployeeCloud(name: String, employeeId: String) {
+    val token = supabase.auth.currentAccessTokenOrNull()
+        ?: error("Admin session expired. Please login again.")
+
+    val safe = name.trim().lowercase(Locale.US)
+        .replace(Regex("[^a-z0-9]+"), ".")
+        .trim('.')
+    require(safe.isNotEmpty()) { "Enter employee name" }
+
+    val body = JSONObject()
+        .put("name", name.trim())
+        .put("employee_id", employeeId.trim())
+        .toString()
+
+    val client = HttpClient(Android)
+    try {
+        val response = client.post("https://lexrjynnikkydnyhewvm.supabase.co/functions/v1/create-employee") {
+            header("Authorization", "Bearer $token")
+            header("apikey", "sb_publishable_IBZ3bsbWriJuWT0i6kYUgQ_P8zDwt1P")
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+        val text = response.bodyAsText()
+        if (response.status.value !in 200..299) {
+            val message = runCatching { JSONObject(text).optString("error") }.getOrDefault("")
+            error(message.ifBlank { "Employee creation failed (${response.status.value})" })
+        }
+    } finally {
+        client.close()
+    }
+}
+
+private suspend fun cloudLoginAndLoad(login: String, password: String, role: String): Result<CloudLoginResult> = runCatching {
+    val profile = cloudLogin(login, password, role).getOrThrow()
+    val isExpectedRole = profile.role.equals(role, ignoreCase = true)
+    if (!profile.is_active || !isExpectedRole) {
+        runCatching { supabase.auth.signOut() }
+        error("Account is inactive or role is not allowed")
+    }
+    val (employees, entries) = loadCloudState(role)
+    CloudLoginResult(profile, employees, entries)
+}
+
+private data class CloudLoginResult(
+    val profile: CloudProfile,
+    val employees: List<Employee>,
+    val entries: List<OtEntry>
 )
 
 private suspend fun cloudLogin(login: String, password: String, role: String): Result<CloudProfile> = runCatching {
@@ -286,37 +472,18 @@ private fun OtApp() {
             "admin" -> AdminApp(data, ::update)
             "employee" -> EmployeeApp(data, ::update)
             else -> LoginScreen { role, login, password ->
-                cloudLogin(login, password, role).map { profile ->
-                    val isExpectedRole = profile.role.equals(role, ignoreCase = true)
-                    if (!profile.is_active || !isExpectedRole) {
-                        runCatching { supabase.auth.signOut() }
-                        error("Account is inactive or role is not allowed")
-                    }
-
-                    if (profile.role.equals("admin", ignoreCase = true)) {
-                        update(
-                            data.copy(
-                                sessionRole = "admin",
-                                sessionEmployeeId = "",
-                                rate = profile.hourly_rate
-                            )
+                cloudLoginAndLoad(login, password, role).map { result ->
+                    val profile = result.profile
+                    val employeeId = profile.employee_id.orEmpty()
+                    update(
+                        data.copy(
+                            employees = result.employees,
+                            entries = result.entries,
+                            sessionRole = profile.role.lowercase(Locale.US),
+                            sessionEmployeeId = employeeId,
+                            rate = profile.hourly_rate
                         )
-                    } else {
-                        val employee = Employee(
-                            id = profile.employee_id,
-                            name = profile.employee_name,
-                            active = profile.is_active,
-                            password = ""
-                        )
-                        update(
-                            data.copy(
-                                employees = (data.employees.filterNot { it.id == employee.id } + employee),
-                                sessionRole = "employee",
-                                sessionEmployeeId = employee.id,
-                                rate = profile.hourly_rate
-                            )
-                        )
-                    }
+                    )
                 }
             }
         }
@@ -421,6 +588,7 @@ private fun OtTrackBrand(compact: Boolean = false) {
 @Composable
 private fun EmployeeHome(data: AppData, employee: Employee, update: (AppData) -> Unit, pad: PaddingValues) {
     var showAdd by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val current = cycleKey(currentDate())
     val own = data.entries.filter { it.employeeId == employee.id && cycleKey(it.date) == current }
     LazyColumn(
@@ -434,7 +602,10 @@ private fun EmployeeHome(data: AppData, employee: Employee, update: (AppData) ->
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OtTrackBrand()
-                TextButton(onClick = { update(data.copy(sessionRole = "", sessionEmployeeId = "")) }) {
+                TextButton(onClick = {
+                    update(data.copy(sessionRole = "", sessionEmployeeId = ""))
+                    scope.launch { runCatching { supabase.auth.signOut() } }
+                }) {
                     Text("Logout", fontWeight = FontWeight.SemiBold)
                 }
             }
@@ -496,26 +667,51 @@ private fun EmployeeHome(data: AppData, employee: Employee, update: (AppData) ->
         }
         item { Text("Recent OT", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
         items(own.sortedByDescending { it.date }.take(5)) {
-            OtRow(it, null, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == it.uid })) })
+            OtRow(it, null, onDelete = {
+                scope.launch {
+                    runCatching { deleteCloudOt(it.uid) }
+                        .onSuccess { update(runCatching { refreshCloudData(data) }.getOrDefault(data.copy(entries = data.entries.filterNot { x -> x.uid == it.uid }))) }
+                }
+            })
         }
         if (own.isEmpty()) item { Text("No OT entries in this cycle.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
-    if (showAdd) AddOtDialog(data, employee, { update(it) }, { showAdd = false })
+    if (showAdd) AddOtDialog(
+        data,
+        employee,
+        onSave = { next ->
+            scope.launch {
+                val row = next.entries.lastOrNull()
+                if (row != null) {
+                    runCatching { insertCloudOt(row) }
+                        .onSuccess { update(runCatching { refreshCloudData(data) }.getOrDefault(next)) }
+                }
+            }
+        },
+        close = { showAdd = false }
+    )
 }
 
 @Composable
 private fun EmployeeRecords(data: AppData, employeeId: String, key: String, title: String, update: (AppData) -> Unit, pad: PaddingValues) {
+    val scope = rememberCoroutineScope()
     val rows = data.entries.filter { it.employeeId == employeeId && cycleKey(it.date) == key }.sortedByDescending { it.date }
     LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("${cycleLabel(key)} • ${cycleRange(key)}") }
         item { LogSummaryCard(rows) }
-        items(rows) { row -> OtRow(row, null, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == row.uid })) }) }
+        items(rows) { row -> OtRow(row, null, onDelete = {
+            scope.launch {
+                runCatching { deleteCloudOt(row.uid) }
+                    .onSuccess { update(runCatching { refreshCloudData(data) }.getOrDefault(data)) }
+            }
+        }) }
         if (rows.isEmpty()) item { Text("No records in this monthly cycle.") }
     }
 }
 
 @Composable
 private fun EmployeeReports(data: AppData, employeeId: String, selected: String?, onSelect: (String?) -> Unit, update: (AppData) -> Unit, pad: PaddingValues) {
+    val scope = rememberCoroutineScope()
     if (selected != null) {
         val rows = data.entries.filter { it.employeeId == employeeId && cycleKey(it.date) == selected }.sortedByDescending { it.date }
         Column(Modifier.fillMaxSize().padding(pad).padding(16.dp)) {
@@ -526,7 +722,12 @@ private fun EmployeeReports(data: AppData, employeeId: String, selected: String?
             LogSummaryCard(rows)
             Spacer(Modifier.height(10.dp))
             LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(rows) { r -> OtRow(r, null, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == r.uid })) }) }
+                items(rows) { r -> OtRow(r, null, onDelete = {
+                    scope.launch {
+                        runCatching { deleteCloudOt(r.uid) }
+                            .onSuccess { update(runCatching { refreshCloudData(data) }.getOrDefault(data)) }
+                    }
+                }) }
                 if (rows.isEmpty()) item { Text("No OT entries in this monthly cycle.") }
             }
         }
@@ -543,39 +744,48 @@ private fun EmployeeReports(data: AppData, employeeId: String, selected: String?
 
 @Composable
 private fun EmployeeSettings(data: AppData, employee: Employee, update: (AppData) -> Unit, pad: PaddingValues) {
-    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var showPassword by remember { mutableStateOf(false) }
-    val backup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-        if (uri != null) writeBackup(context, uri, data)
-    }
-    val restore = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            readBackup(context, uri)?.let { restored ->
-                update(restored.copy(sessionRole = "employee", sessionEmployeeId = employee.id, darkMode = data.darkMode))
-            }
-        }
-    }
     LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
-        item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("My Profile", fontWeight = FontWeight.Bold); Spacer(Modifier.height(4.dp)); Text(employee.name); Text("Employee ID: ${employee.id}", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
-        item { OutlinedButton(onClick = { showPassword = true }, Modifier.fillMaxWidth()) { Icon(Icons.Default.Lock, null); Spacer(Modifier.width(6.dp)); Text("Change Password") } }
-        item { OutlinedButton(onClick = { update(data.copy(darkMode = !data.darkMode)) }, Modifier.fillMaxWidth()) { Icon(if (data.darkMode) Icons.Default.LightMode else Icons.Default.DarkMode, null); Spacer(Modifier.width(6.dp)); Text(if (data.darkMode) "Light Mode" else "Dark Mode") } }
         item {
             Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Backup & Restore", fontWeight = FontWeight.Bold)
-                    Text("Keep your OT data safe before uninstalling or changing phones.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Button(onClick = { backup.launch("OT-Track-Backup.json") }, Modifier.fillMaxWidth()) {
-                        Icon(Icons.Default.Backup, null); Spacer(Modifier.width(6.dp)); Text("Backup Offline Data")
-                    }
-                    OutlinedButton(onClick = { restore.launch(arrayOf("application/json", "text/json", "*/*")) }, Modifier.fillMaxWidth()) {
-                        Icon(Icons.Default.Restore, null); Spacer(Modifier.width(6.dp)); Text("Restore Offline Data")
-                    }
+                Column(Modifier.padding(16.dp)) {
+                    Text("My Profile", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(employee.name)
+                    Text("Employee ID: ${employee.id}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
-        item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("About OT Track", fontWeight = FontWeight.Bold); Text("Online OT Management", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
-        item { OutlinedButton(onClick = { update(data.copy(sessionRole = "", sessionEmployeeId = "")) }, Modifier.fillMaxWidth()) { Icon(Icons.Default.Logout, null); Spacer(Modifier.width(6.dp)); Text("Logout") } }
+        item {
+            OutlinedButton(onClick = { showPassword = true }, Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Lock, null); Spacer(Modifier.width(6.dp)); Text("Change Password")
+            }
+        }
+        item {
+            OutlinedButton(onClick = { update(data.copy(darkMode = !data.darkMode)) }, Modifier.fillMaxWidth()) {
+                Icon(if (data.darkMode) Icons.Default.LightMode else Icons.Default.DarkMode, null)
+                Spacer(Modifier.width(6.dp))
+                Text(if (data.darkMode) "Light Mode" else "Dark Mode")
+            }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("About OT Track", fontWeight = FontWeight.Bold)
+                    Text("Online OT Management", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        item {
+            OutlinedButton(onClick = {
+                update(data.copy(sessionRole = "", sessionEmployeeId = ""))
+                scope.launch { runCatching { supabase.auth.signOut() } }
+            }, Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Logout, null); Spacer(Modifier.width(6.dp)); Text("Logout")
+            }
+        }
     }
     if (showPassword) EmployeePasswordDialog(employee, data, update) { showPassword = false }
 }
@@ -674,15 +884,24 @@ private fun AdminDialogs(
 
 @Composable
 private fun AdminDashboard(data: AppData, update: (AppData) -> Unit, pad: PaddingValues, add: () -> Unit, rate: () -> Unit, export: () -> Unit) {
+    val scope = rememberCoroutineScope()
     val key = cycleKey(currentDate()); val rows = data.entries.filter { cycleKey(it.date) == key }
     LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Column { Text("Admin Dashboard", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(cycleRange(key)) }; TextButton(onClick = { update(data.copy(sessionRole = "", sessionEmployeeId = "")) }) { Text("Logout") } } }
+        item { Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Column { Text("Admin Dashboard", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(cycleRange(key)) }; TextButton(onClick = {
+            update(data.copy(sessionRole = "", sessionEmployeeId = ""))
+            scope.launch { runCatching { supabase.auth.signOut() } }
+        }) { Text("Logout") } } }
         item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { StatCard("Employees", data.employees.count { it.active }.toString(), Modifier.weight(1f)); StatCard("OT Hours", fmt2(rows.sumOf { it.hours }), Modifier.weight(1f)); StatCard("OT Amount", money(rows.sumOf { it.amount }), Modifier.weight(1f)) } }
         item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text("OT Rate – Admin Only", fontWeight = FontWeight.Bold); Text(money(data.rate) + "/hour"); Spacer(Modifier.height(8.dp)); OutlinedButton(onClick = rate) { Text("Change Rate") } } } }
         item { Button(onClick = add, Modifier.fillMaxWidth()) { Text("Add Employee") } }
         item { OutlinedButton(onClick = export, Modifier.fillMaxWidth()) { Text("Export All OT CSV") } }
         item { Text("Current Cycle Records", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-        items(rows.sortedByDescending { it.date }) { r -> OtRow(r, data.employees.firstOrNull { it.id == r.employeeId }?.name, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == r.uid })) }) }
+        items(rows.sortedByDescending { it.date }) { r -> OtRow(r, data.employees.firstOrNull { it.id == r.employeeId }?.name, onDelete = {
+            scope.launch {
+                runCatching { deleteCloudOt(r.uid) }
+                    .onSuccess { update(runCatching { refreshCloudData(data) }.getOrDefault(data)) }
+            }
+        }) }
     }
 }
 
@@ -691,14 +910,25 @@ private fun StatCard(title: String, value: String, modifier: Modifier) { Card(mo
 
 @Composable
 private fun AdminEmployees(data: AppData, update: (AppData) -> Unit, pad: PaddingValues, add: () -> Unit) {
+    val scope = rememberCoroutineScope()
     LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Text("Employee Management", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Button(onClick = add) { Text("+ Add") } } }
         items(data.employees.sortedBy { it.name.lowercase() }) { e ->
             Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) {
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Column { Text(e.name, fontWeight = FontWeight.Bold); Text("ID: ${e.id}"); Text(if (e.active) "Active" else "Disabled") } }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { update(data.copy(employees = data.employees.map { if (it.id == e.id) it.copy(active = !it.active) else it })) }) { Text(if (e.active) "Disable" else "Enable") }
-                    OutlinedButton(onClick = { update(data.copy(employees = data.employees.filterNot { it.id == e.id })) }) { Text("Delete") }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            runCatching { setEmployeeActive(e.id, !e.active) }
+                                .onSuccess { update(runCatching { refreshCloudData(data) }.getOrDefault(data.copy(employees = data.employees.map { if (it.id == e.id) it.copy(active = !e.active) else it }))) }
+                        }
+                    }) { Text(if (e.active) "Disable" else "Enable") }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            runCatching { deleteEmployeeProfile(e.id) }
+                                .onSuccess { update(runCatching { refreshCloudData(data) }.getOrDefault(data.copy(employees = data.employees.filterNot { it.id == e.id }))) }
+                        }
+                    }) { Text("Delete") }
                 }
             } }
         }
@@ -708,13 +938,19 @@ private fun AdminEmployees(data: AppData, update: (AppData) -> Unit, pad: Paddin
 
 @Composable
 private fun AdminMonthly(data: AppData, update: (AppData) -> Unit, selected: String?, onSelect: (String?) -> Unit, pad: PaddingValues) {
+    val scope = rememberCoroutineScope()
     if (selected != null) {
         val rows = data.entries.filter { cycleKey(it.date) == selected }.sortedByDescending { it.date }
         Column(Modifier.fillMaxSize().padding(pad).padding(16.dp)) {
             TextButton(onClick = { onSelect(null) }) { Text("← All Monthly Folders") }
             Text(cycleLabel(selected), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(cycleRange(selected)); Spacer(Modifier.height(10.dp)); LogSummaryCard(rows)
-            LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) { items(rows) { r -> OtRow(r, data.employees.firstOrNull { it.id == r.employeeId }?.name, onDelete = { update(data.copy(entries = data.entries.filterNot { x -> x.uid == r.uid })) }) } }
+            LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) { items(rows) { r -> OtRow(r, data.employees.firstOrNull { it.id == r.employeeId }?.name, onDelete = {
+                scope.launch {
+                    runCatching { deleteCloudOt(r.uid) }
+                        .onSuccess { update(runCatching { refreshCloudData(data) }.getOrDefault(data)) }
+                }
+            }) } }
         }
     } else LazyColumn(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text("Monthly Folders", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text("Admin: all employee records") }
@@ -832,46 +1068,165 @@ private fun EmployeePasswordDialog(employee: Employee, data: AppData, update: (A
     var value by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
-    AlertDialog(onDismissRequest = close, title = { Text("Change Password") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(value, { value = it }, label = { Text("New password") }, singleLine = true)
-        OutlinedTextField(confirm, { confirm = it }, label = { Text("Confirm password") }, singleLine = true)
-        if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
-    } }, confirmButton = { Button(onClick = {
-        if (value.length < 4) error = "Minimum 4 characters"
-        else if (value != confirm) error = "Passwords do not match"
-        else { update(data.copy(employees = data.employees.map { if (it.id == employee.id) it.copy(password = value) else it })); close() }
-    }) { Text("Save") } }, dismissButton = { TextButton(onClick = close) { Text("Cancel") } })
+    var loading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    AlertDialog(onDismissRequest = { if (!loading) close() }, title = { Text("Change Password") }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(value, { value = it }, label = { Text("New password") }, singleLine = true)
+            OutlinedTextField(confirm, { confirm = it }, label = { Text("Confirm password") }, singleLine = true)
+            if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
+        }
+    }, confirmButton = {
+        Button(enabled = !loading, onClick = {
+            when {
+                value.length < 4 -> error = "Minimum 4 characters"
+                value != confirm -> error = "Passwords do not match"
+                else -> {
+                    loading = true
+                    scope.launch {
+                        runCatching { supabase.auth.updateUser { password = value } }
+                            .onSuccess { loading = false; close() }
+                            .onFailure { loading = false; error = it.message ?: "Password update failed" }
+                    }
+                }
+            }
+        }) { Text(if (loading) "Saving..." else "Save") }
+    }, dismissButton = { TextButton(enabled = !loading, onClick = close) { Text("Cancel") } })
 }
 
 @Composable
 private fun EmployeeDialog(data: AppData, update: (AppData) -> Unit, close: () -> Unit) {
-    var name by remember { mutableStateOf("") }; var id by remember { mutableStateOf("") }; var error by remember { mutableStateOf("") }
-    AlertDialog(onDismissRequest = close, title = { Text("Create Employee") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(name, { name = it }, label = { Text("Employee Name") }, singleLine = true)
-        OutlinedTextField(id, { id = it }, label = { Text("Employee ID / Password") }, singleLine = true)
-        Text("Employee login ID = name; initial password = employee ID")
-        if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
-    } }, confirmButton = { Button(onClick = {
-        if (name.trim().isEmpty() || id.trim().isEmpty()) { error = "Enter name and ID"; return@Button }
-        if (data.employees.any { it.id == id.trim() }) { error = "Employee ID already exists"; return@Button }
-        update(data.copy(employees = data.employees + Employee(id.trim(), name.trim(), true, id.trim()))); close()
-    }) { Text("Create") } }, dismissButton = { TextButton(onClick = close) { Text("Cancel") } })
+    var name by remember { mutableStateOf("") }
+    var id by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    AlertDialog(
+        onDismissRequest = { if (!loading) close() },
+        title = { Text("Create Employee") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(name, { name = it; error = "" }, label = { Text("Employee Name") }, singleLine = true)
+                OutlinedTextField(id, { id = it; error = "" }, label = { Text("Employee ID / Password") }, singleLine = true)
+                Text("Employee login ID = name; initial password = employee ID")
+                if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !loading,
+                onClick = {
+                    if (name.trim().isEmpty() || id.trim().isEmpty()) {
+                        error = "Enter name and ID"
+                        return@Button
+                    }
+                    if (data.employees.any { it.id == id.trim() }) {
+                        error = "Employee ID already exists"
+                        return@Button
+                    }
+                    loading = true
+                    scope.launch {
+                        runCatching { createEmployeeCloud(name, id) }
+                            .onSuccess {
+                                val refreshed = runCatching { refreshCloudData(data) }.getOrDefault(data)
+                                update(refreshed)
+                                loading = false
+                                close()
+                            }
+                            .onFailure {
+                                loading = false
+                                error = it.message ?: "Employee creation failed"
+                            }
+                    }
+                }
+            ) { Text(if (loading) "Creating..." else "Create") }
+        },
+        dismissButton = { TextButton(enabled = !loading, onClick = close) { Text("Cancel") } }
+    )
 }
 
 @Composable
 private fun RateDialog(data: AppData, update: (AppData) -> Unit, close: () -> Unit) {
-    var value by remember { mutableStateOf(fmt2(data.rate)) }; var error by remember { mutableStateOf("") }
-    AlertDialog(onDismissRequest = close, title = { Text("Change OT Rate") }, text = { Column { OutlinedTextField(value, { value = it }, label = { Text("₹ per hour") }, singleLine = true); if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error) } }, confirmButton = { Button(onClick = { val r = value.toDoubleOrNull(); if (r == null || r <= 0) error = "Enter a valid rate" else { update(data.copy(rate = r)); close() } }) { Text("Save") } }, dismissButton = { TextButton(onClick = close) { Text("Cancel") } })
+    var value by remember { mutableStateOf(fmt2(data.rate)) }
+    var error by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    AlertDialog(
+        onDismissRequest = { if (!loading) close() },
+        title = { Text("Change OT Rate") },
+        text = {
+            Column {
+                OutlinedTextField(value, { value = it }, label = { Text("₹ per hour") }, singleLine = true)
+                if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
+            }
+        },
+        confirmButton = {
+            Button(enabled = !loading, onClick = {
+                val r = value.toDoubleOrNull()
+                if (r == null || r <= 0) {
+                    error = "Enter a valid rate"
+                } else {
+                    loading = true
+                    scope.launch {
+                        runCatching { updateMyRate(r) }
+                            .onSuccess {
+                                update(data.copy(rate = r))
+                                loading = false
+                                close()
+                            }
+                            .onFailure {
+                                loading = false
+                                error = it.message ?: "Rate update failed"
+                            }
+                    }
+                }
+            }) { Text(if (loading) "Saving..." else "Save") }
+        },
+        dismissButton = { TextButton(enabled = !loading, onClick = close) { Text("Cancel") } }
+    )
 }
 
 @Composable
 private fun PasswordDialog(data: AppData, update: (AppData) -> Unit, close: () -> Unit) {
-    var value by remember { mutableStateOf("") }; var confirm by remember { mutableStateOf("") }; var error by remember { mutableStateOf("") }
-    AlertDialog(onDismissRequest = close, title = { Text("Change Admin Password") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(value, { value = it }, label = { Text("New password") }, singleLine = true)
-        OutlinedTextField(confirm, { confirm = it }, label = { Text("Confirm password") }, singleLine = true)
-        if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
-    } }, confirmButton = { Button(onClick = { if (value.length < 4) error = "Minimum 4 characters" else if (value != confirm) error = "Passwords do not match" else { update(data.copy(adminPassword = value)); close() } }) { Text("Save") } }, dismissButton = { TextButton(onClick = close) { Text("Cancel") } })
+    var value by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    AlertDialog(
+        onDismissRequest = { if (!loading) close() },
+        title = { Text("Change Admin Password") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value, { value = it }, label = { Text("New password") }, singleLine = true)
+                OutlinedTextField(confirm, { confirm = it }, label = { Text("Confirm password") }, singleLine = true)
+                if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
+            }
+        },
+        confirmButton = {
+            Button(enabled = !loading, onClick = {
+                when {
+                    value.length < 4 -> error = "Minimum 4 characters"
+                    value != confirm -> error = "Passwords do not match"
+                    else -> {
+                        loading = true
+                        scope.launch {
+                            runCatching { supabase.auth.updateUser { password = value } }
+                                .onSuccess {
+                                    loading = false
+                                    close()
+                                }
+                                .onFailure {
+                                    loading = false
+                                    error = it.message ?: "Password update failed"
+                                }
+                        }
+                    }
+                }
+            }) { Text(if (loading) "Saving..." else "Save") }
+        },
+        dismissButton = { TextButton(enabled = !loading, onClick = close) { Text("Cancel") } }
+    )
 }
 
 private fun writeCsv(context: Context, uri: Uri, data: AppData) {
