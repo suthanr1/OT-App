@@ -286,11 +286,11 @@ private fun OtApp() {
             "admin" -> AdminApp(data, ::update)
             "employee" -> EmployeeApp(data, ::update)
             else -> LoginScreen { role, login, password ->
-                cloudLogin(login, password, role).onSuccess { profile ->
+                cloudLogin(login, password, role).map { profile ->
                     val isExpectedRole = profile.role.equals(role, ignoreCase = true)
                     if (!profile.is_active || !isExpectedRole) {
                         runCatching { supabase.auth.signOut() }
-                        throw IllegalStateException("Account is inactive or role is not allowed")
+                        error("Account is inactive or role is not allowed")
                     }
 
                     if (profile.role.equals("admin", ignoreCase = true)) {
@@ -317,14 +317,14 @@ private fun OtApp() {
                             )
                         )
                     }
-                }.isSuccess
+                }
             }
         }
     }
 }
 
 @Composable
-private fun LoginScreen(onLogin: suspend (String, String, String) -> Boolean) {
+private fun LoginScreen(onLogin: suspend (String, String, String) -> Result<Unit>) {
     var role by remember { mutableStateOf("employee") }
     var login by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -361,9 +361,11 @@ private fun LoginScreen(onLogin: suspend (String, String, String) -> Boolean) {
                     loading = true
                     error = ""
                     scope.launch {
-                        val ok = runCatching { onLogin(role, login, password) }.getOrDefault(false)
+                        val result = runCatching { onLogin(role, login, password) }.getOrElse { Result.failure(it) }
                         loading = false
-                        if (!ok) error = "Invalid login details or Supabase connection failed"
+                        result.exceptionOrNull()?.let { ex ->
+                            error = ex.message?.takeIf { it.isNotBlank() } ?: ex::class.simpleName ?: "Login failed"
+                        }
                     }
                 },
                 enabled = !loading,
