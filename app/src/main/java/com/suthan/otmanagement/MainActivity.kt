@@ -221,7 +221,7 @@ private suspend fun cloudLogin(login: String, password: String, role: String): R
         this.password = password
     }
 
-    val userId = supabase.auth.currentUserOrNull?.id
+    val userId = supabase.auth.currentUserOrNull()?.id
         ?: error("Supabase login succeeded but user session was not found")
 
     supabase.from("profiles")
