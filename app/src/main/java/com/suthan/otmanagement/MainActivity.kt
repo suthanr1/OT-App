@@ -670,11 +670,12 @@ private fun EmployeeHome(data: AppData, employee: Employee, update: (AppData) ->
             }
         }
         item { Text("Recent OT", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
-        items(own.sortedByDescending { it.date }.take(5)) {
-            OtRow(it, null, onDelete = {
+        items(own.sortedByDescending { it.date }.take(5)) { row ->
+            OtRow(row, null, onDelete = {
+                val deletedUid = row.uid
                 scope.launch {
-                    runCatching { deleteCloudOt(it.uid) }
-                        .onSuccess { update(runCatching { refreshCloudData(data) }.getOrDefault(data.copy(entries = data.entries.filterNot { x -> x.uid == it.uid }))) }
+                    runCatching { deleteCloudOt(deletedUid) }
+                        .onSuccess { update(runCatching { refreshCloudData(data) }.getOrDefault(data.copy(entries = data.entries.filterNot { x -> x.uid == deletedUid }))) }
                 }
             })
         }
